@@ -19,9 +19,6 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // Config
 // ---------------------------------------------------------------------------
 
-const RULES_URL_TEMPLATE = (year: number) =>
-  `https://media.wizards.com/${year}/downloads/MagicCompRules.txt`;
-
 const EMBEDDING_MODEL = "text-embedding-004"; // Gemini free-tier embedding model
 const EMBEDDING_DIMENSIONS = 768;
 const BATCH_SIZE = 50; // Gemini embedding API batch limit
@@ -39,25 +36,49 @@ interface RuleChunk {
 
 // ---------------------------------------------------------------------------
 // Fetch Comp Rules text
+// Wizards uses dated filenames like MagicCompRules%2020260227.txt
+// We scrape the rules page to find the current URL rather than hardcoding dates
 // ---------------------------------------------------------------------------
 
 async function fetchCompRules(): Promise<string> {
-  const currentYear = new Date().getFullYear();
+  const RULES_PAGE = "https://magic.wizards.com/en/rules";
 
-  for (const year of [currentYear, currentYear - 1]) {
-    const url = RULES_URL_TEMPLATE(year);
-    console.log(`Trying: ${url}`);
+  console.log(`Fetching rules page to find current Comp Rules URL...`);
+  const pageRes = await fetch(RULES_PAGE, {
+    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
+  });
 
-    const res = await fetch(url);
-    if (res.ok) {
-      console.log(`Fetched Comp Rules from ${year} URL.`);
-      return await res.text();
-    }
-
-    console.warn(`  ${res.status} — trying previous year...`);
+  if (!pageRes.ok) {
+    throw new Error(`Could not fetch rules page: ${pageRes.status}`);
   }
 
-  throw new Error("Could not fetch Comp Rules for current or previous year.");
+  const html = await pageRes.text();
+
+  // Find the .txt link for the Comprehensive Rules
+  const match = html.match(
+    /https:\/\/media\.wizards\.com\/\d{4}\/downloads\/MagicCompRules[^"'\s]+\.txt/i
+  );
+
+  if (!match) {
+    throw new Error(
+      "Could not find Comprehensive Rules .txt URL on the Wizards rules page. " +
+      "The page structure may have changed -- check https://magic.wizards.com/en/rules manually."
+    );
+  }
+
+  const url = match[0].replace(/%20/g, " ").replace(/ /g, "%20");
+  console.log(`Found Comp Rules URL: ${url}`);
+
+  const rulesRes = await fetch(url, {
+    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
+  });
+
+  if (!rulesRes.ok) {
+    throw new Error(`Could not fetch Comp Rules from ${url}: ${rulesRes.status}`);
+  }
+
+  console.log("Fetched Comp Rules successfully.");
+  return await rulesRes.text();
 }
 
 // ---------------------------------------------------------------------------
