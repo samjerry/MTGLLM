@@ -20,10 +20,10 @@ async function main() {
 
     console.log("--- Ingesting Comprehensive Rules ---");
     // Dynamically import so we run in the same tsx process -- no subprocess needed
-    await import("./ingest-comp-rules.js");
+    await import("./ingest-comp-rules.ts");
 
     console.log("\n--- Ingesting Tournament Rules (MTR + IPG) ---");
-    await import("./ingest-tournament-rules.js");
+    await import("./ingest-tournament-rules.ts");
 
     console.log("\nIngestion complete.");
   } else {
