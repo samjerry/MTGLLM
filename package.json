@@ -1,0 +1,30 @@
+{
+  "name": "mtg-llm-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "npx tsx scripts/build.ts && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "ingest:rules": "npx tsx scripts/ingest-comp-rules.ts",
+    "ingest:tournament": "npx tsx scripts/ingest-tournament-rules.ts",
+    "ingest:all": "npm run ingest:rules && npm run ingest:tournament"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.15.0",
+    "lucide-react": "^0.383.0",
+    "next": "14.2.5",
+    "pg": "^8.12.0",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8.11.6",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "tsx": "^4.16.2",
+    "typescript": "^5"
+  }
+}
