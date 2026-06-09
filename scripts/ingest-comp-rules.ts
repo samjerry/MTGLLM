@@ -36,49 +36,40 @@ interface RuleChunk {
 
 // ---------------------------------------------------------------------------
 // Fetch Comp Rules text
-// Wizards uses dated filenames like MagicCompRules%2020260227.txt
-// We scrape the rules page to find the current URL rather than hardcoding dates
+// Wizards uses dated filenames. We maintain a list of known recent URLs
+// and try them in order, falling back to a community mirror.
+// Update KNOWN_URLS when a new set drops (check https://magic.wizards.com/en/rules).
 // ---------------------------------------------------------------------------
 
+const KNOWN_COMP_RULES_URLS = [
+  // Most recent first -- update this list each set release
+  "https://media.wizards.com/2026/downloads/MagicCompRules%2020260227.txt",
+  "https://media.wizards.com/2025/downloads/MagicCompRules%2020251114.txt",
+  "https://media.wizards.com/2025/downloads/MagicCompRules%2020250404.txt",
+];
+
 async function fetchCompRules(): Promise<string> {
-  const RULES_PAGE = "https://magic.wizards.com/en/rules";
-
-  console.log(`Fetching rules page to find current Comp Rules URL...`);
-  const pageRes = await fetch(RULES_PAGE, {
-    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
-  });
-
-  if (!pageRes.ok) {
-    throw new Error(`Could not fetch rules page: ${pageRes.status}`);
+  for (const url of KNOWN_COMP_RULES_URLS) {
+    console.log(`Trying: ${url}`);
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
+      });
+      if (res.ok) {
+        console.log("Fetched Comp Rules successfully.");
+        return await res.text();
+      }
+      console.warn(`  ${res.status} -- trying next URL...`);
+    } catch {
+      console.warn(`  fetch failed -- trying next URL...`);
+    }
   }
 
-  const html = await pageRes.text();
-
-  // Find the .txt link for the Comprehensive Rules
-  const match = html.match(
-    /https:\/\/media\.wizards\.com\/\d{4}\/downloads\/MagicCompRules[^"'\s]+\.txt/i
+  throw new Error(
+    "Could not fetch Comp Rules from any known URL. " +
+    "A new set may have dropped -- update KNOWN_COMP_RULES_URLS in ingest-comp-rules.ts " +
+    "with the latest URL from https://magic.wizards.com/en/rules"
   );
-
-  if (!match) {
-    throw new Error(
-      "Could not find Comprehensive Rules .txt URL on the Wizards rules page. " +
-      "The page structure may have changed -- check https://magic.wizards.com/en/rules manually."
-    );
-  }
-
-  const url = match[0].replace(/%20/g, " ").replace(/ /g, "%20");
-  console.log(`Found Comp Rules URL: ${url}`);
-
-  const rulesRes = await fetch(url, {
-    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
-  });
-
-  if (!rulesRes.ok) {
-    throw new Error(`Could not fetch Comp Rules from ${url}: ${rulesRes.status}`);
-  }
-
-  console.log("Fetched Comp Rules successfully.");
-  return await rulesRes.text();
 }
 
 // ---------------------------------------------------------------------------
