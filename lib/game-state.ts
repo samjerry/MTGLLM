@@ -1,190 +1,234 @@
 /**
- * Scryfall Utilities
- * Place at: lib/scryfall.ts
+ * MTG Game State Types and Utilities
+ * Place at: lib/game-state.ts
  *
- * Handles card lookups, color identity searches, and oracle text fetching.
- * All requests respect Scryfall's rate limit guidance (50-100ms delay between calls).
+ * Defines the canonical game state JSON shape used across
+ * the game state tracker mode and UI.
  */
-
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface ScryfallCard {
-  id: string;
+export type Zone =
+  | "battlefield"
+  | "hand"
+  | "graveyard"
+  | "exile"
+  | "library"
+  | "stack"
+  | "command";
+
+export type Phase =
+  | "beginning"
+  | "precombat_main"
+  | "combat"
+  | "postcombat_main"
+  | "ending";
+
+export type Step =
+  | "untap"
+  | "upkeep"
+  | "draw"
+  | "precombat_main"
+  | "beginning_of_combat"
+  | "declare_attackers"
+  | "declare_blockers"
+  | "combat_damage"
+  | "end_of_combat"
+  | "postcombat_main"
+  | "end"
+  | "cleanup";
+
+export interface CardOnBattlefield {
   name: string;
-  mana_cost?: string;
-  type_line: string;
-  oracle_text?: string;
-  colors?: string[];
-  color_identity: string[];
-  keywords: string[];
-  legalities: Record<string, string>;
-  set: string;
-  rarity: string;
-  edhrec_rank?: number;
+  tapped: boolean;
+  counters?: Record<string, number>; // e.g. { "+1/+1": 3, "loyalty": 5 }
+  attached_to?: string;              // name of card this is attached to
+  tokens?: boolean;                  // true if this is a token
+  notes?: string;                    // e.g. "has summoning sickness"
 }
 
-export interface ParsedBracket {
-  raw: string;         // e.g. "[[Doubling Season]]" or "[[UB]]"
-  type: "card" | "color_identity";
-  value: string;       // e.g. "Doubling Season" or "UB"
+export interface StackEntry {
+  type: "spell" | "ability";
+  description: string;               // e.g. "Lightning Bolt targeting Player 2"
+  controller: string;                // player name
 }
 
-// Recognized color identity strings (WUBRG order)
-const COLOR_IDENTITY_RE = /^[WUBRGwubrg]{1,5}$/;
-
-// ---------------------------------------------------------------------------
-// Bracket parser
-// ---------------------------------------------------------------------------
-
-export function parseBrackets(message: string): ParsedBracket[] {
-  const matches = [...message.matchAll(/\[\[([^\]]+)\]\]/g)];
-
-  return matches.map((m) => {
-    const value = m[1].trim();
-    const isColor = COLOR_IDENTITY_RE.test(value);
-    return {
-      raw: m[0],
-      type: isColor ? "color_identity" : "card",
-      value: isColor ? value.toUpperCase() : value,
-    };
-  });
+export interface PlayerState {
+  name: string;
+  life: number;
+  poison_counters: number;
+  energy_counters: number;
+  mana_pool: Record<string, number>; // e.g. { W: 0, U: 2, B: 0, R: 0, G: 0, C: 0 }
+  hand_count: number;                // number of cards in hand (not revealed)
+  hand_cards?: string[];             // revealed card names if known
+  library_count: number;
+  battlefield: CardOnBattlefield[];
+  graveyard: string[];
+  exile: string[];
+  command_zone?: string[];           // commander(s) if applicable
+  commander_tax?: number;            // additional commander cost
+  monarch?: boolean;
+  initiative?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Rate-limit helper
-// ---------------------------------------------------------------------------
-
-async function delay(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+export interface GameState {
+  players: PlayerState[];            // 2-4 players
+  active_player: string;            // player name whose turn it is
+  priority_player: string;          // player name who currently has priority
+  phase: Phase;
+  step: Step;
+  turn_number: number;
+  stack: StackEntry[];
+  format?: string;                  // e.g. "Commander", "Standard"
+  notes?: string;                   // any extra context
+  version: number;                  // increments on each state update
 }
 
 // ---------------------------------------------------------------------------
-// Fetch a single card by fuzzy name
+// Default state factory
 // ---------------------------------------------------------------------------
 
-export async function fetchCardByName(
-  name: string
-): Promise<ScryfallCard | null> {
-  try {
-    const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
-    });
+export function createDefaultPlayerState(name: string): PlayerState {
+  return {
+    name,
+    life: 20,
+    poison_counters: 0,
+    energy_counters: 0,
+    mana_pool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+    hand_count: 7,
+    library_count: 53,
+    battlefield: [],
+    graveyard: [],
+    exile: [],
+  };
+}
 
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data as ScryfallCard;
-  } catch {
-    return null;
+export function createCommanderPlayerState(name: string): PlayerState {
+  return {
+    ...createDefaultPlayerState(name),
+    life: 40,
+    command_zone: [],
+    commander_tax: 0,
+  };
+}
+
+export function createDefaultGameState(
+  playerNames: string[],
+  format: "Commander" | "Standard" | "Modern" | "Other" = "Commander"
+): GameState {
+  const isCommander = format === "Commander";
+
+  return {
+    players: playerNames.map((name) =>
+      isCommander
+        ? createCommanderPlayerState(name)
+        : createDefaultPlayerState(name)
+    ),
+    active_player: playerNames[0],
+    priority_player: playerNames[0],
+    phase: "precombat_main",
+    step: "precombat_main",
+    turn_number: 1,
+    stack: [],
+    format,
+    notes: "",
+    version: 1,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+export function validateGameState(state: unknown): {
+  valid: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+
+  if (!state || typeof state !== "object") {
+    return { valid: false, errors: ["Game state must be an object."] };
   }
-}
 
-// ---------------------------------------------------------------------------
-// Fetch multiple cards by name (with rate limiting)
-// ---------------------------------------------------------------------------
+  const s = state as Partial<GameState>;
 
-export async function fetchCardsByName(
-  names: string[]
-): Promise<Record<string, ScryfallCard | null>> {
-  const results: Record<string, ScryfallCard | null> = {};
-
-  for (let i = 0; i < names.length; i++) {
-    results[names[i]] = await fetchCardByName(names[i]);
-    if (i < names.length - 1) await delay(80);
+  if (!Array.isArray(s.players) || s.players.length < 2 || s.players.length > 4) {
+    errors.push("Game state must have 2-4 players.");
   }
 
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// Fetch cards by exact color identity from Scryfall search
-// e.g. "UB" -> cards with color_identity exactly {U, B}
-// ---------------------------------------------------------------------------
-
-export async function fetchCardsByColorIdentity(
-  colors: string,
-  limit = 10
-): Promise<ScryfallCard[]> {
-  try {
-    // Scryfall query: exact color identity using id: syntax
-    const colorChars = colors.toUpperCase().split("").join("");
-    const query = `id:${colorChars}`;
-
-    const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=edhrec`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
-    });
-
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.data ?? []).slice(0, limit) as ScryfallCard[];
-  } catch {
-    return [];
+  if (s.players) {
+    for (const player of s.players) {
+      if (typeof player.name !== "string") errors.push("Each player must have a name.");
+      if (typeof player.life !== "number") errors.push(`Player ${player.name}: life must be a number.`);
+      if (!Array.isArray(player.battlefield)) errors.push(`Player ${player.name}: battlefield must be an array.`);
+    }
   }
+
+  if (!s.active_player) errors.push("Game state must have an active_player.");
+  if (!s.phase) errors.push("Game state must have a phase.");
+  if (!s.step) errors.push("Game state must have a step.");
+  if (typeof s.turn_number !== "number") errors.push("Game state must have a turn_number.");
+  if (!Array.isArray(s.stack)) errors.push("Game state must have a stack array.");
+
+  return { valid: errors.length === 0, errors };
 }
 
 // ---------------------------------------------------------------------------
-// Format a card into a compact context string for LLM prompts
+// Compact summary for LLM context (avoids bloating the prompt)
 // ---------------------------------------------------------------------------
 
-export function formatCardContext(card: ScryfallCard): string {
-  const lines = [
-    `**${card.name}** [${card.mana_cost ?? "no cost"}]`,
-    `Type: ${card.type_line}`,
+export function summarizeGameState(state: GameState): string {
+  const lines: string[] = [
+    `Turn ${state.turn_number} | ${state.format ?? "Unknown format"}`,
+    `Active player: ${state.active_player} | Priority: ${state.priority_player}`,
+    `Phase: ${state.phase} / Step: ${state.step}`,
+    "",
   ];
 
-  if (card.oracle_text) {
-    lines.push(`Oracle: ${card.oracle_text}`);
+  for (const player of state.players) {
+    lines.push(`--- ${player.name} ---`);
+    lines.push(`Life: ${player.life} | Poison: ${player.poison_counters} | Hand: ${player.hand_count} cards | Library: ${player.library_count} cards`);
+
+    if (player.command_zone?.length) {
+      lines.push(`Command zone: ${player.command_zone.join(", ")} (tax: ${player.commander_tax ?? 0})`);
+    }
+
+    if (player.battlefield.length > 0) {
+      const bf = player.battlefield
+        .map(
+          (c) =>
+            `${c.name}${c.tapped ? " [tapped]" : ""}${c.counters ? ` [${Object.entries(c.counters).map(([k, v]) => `${v} ${k}`).join(", ")}]` : ""}${c.notes ? ` (${c.notes})` : ""}`
+        )
+        .join(", ");
+      lines.push(`Battlefield: ${bf}`);
+    } else {
+      lines.push("Battlefield: empty");
+    }
+
+    if (player.graveyard.length > 0) {
+      lines.push(`Graveyard: ${player.graveyard.join(", ")}`);
+    }
+
+    if (player.exile.length > 0) {
+      lines.push(`Exile: ${player.exile.join(", ")}`);
+    }
+
+    lines.push("");
   }
 
-  if (card.keywords.length > 0) {
-    lines.push(`Keywords: ${card.keywords.join(", ")}`);
+  if (state.stack.length > 0) {
+    lines.push("--- Stack (top to bottom) ---");
+    state.stack.forEach((entry, i) => {
+      lines.push(`${i + 1}. [${entry.type}] ${entry.description} (controller: ${entry.controller})`);
+    });
+    lines.push("");
+  }
+
+  if (state.notes) {
+    lines.push(`Notes: ${state.notes}`);
   }
 
   return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Format a color identity sample into a context block
-// ---------------------------------------------------------------------------
-
-export function formatColorIdentityContext(
-  colors: string,
-  cards: ScryfallCard[]
-): string {
-  if (cards.length === 0) {
-    return `Color identity ${colors}: No sample cards fetched.`;
-  }
-
-  const cardLines = cards.map((c) => `- ${c.name} (${c.type_line})`).join("\n");
-  return `Color identity ${colors} sample cards (by EDHRec rank):\n${cardLines}`;
-}
-
-// ---------------------------------------------------------------------------
-// Extract card names from a message using Gemini
-// (for cards mentioned in natural language, not in [[ ]] brackets)
-// ---------------------------------------------------------------------------
-
-export async function extractCardNamesGemini(
-  message: string,
-  genAI: GoogleGenerativeAI
-): Promise<string[]> {
-  try {
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      systemInstruction:
-        'You are a Magic: The Gathering card name extractor. Extract all MTG card names explicitly mentioned in the user message. Respond ONLY with a JSON array of strings, no preamble, no markdown. If no card names are found, respond with [].',
-    });
-
-    const result = await model.generateContent(message);
-    const text = result.response.text().trim();
-    const clean = text.replace(/```json|```/g, "").trim();
-    return JSON.parse(clean) as string[];
-  } catch {
-    return [];
-  }
 }
