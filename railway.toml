@@ -4,11 +4,11 @@
 
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm install --frozen-lockfile && npm run build"
+buildCommand = "npm install --frozen-lockfile && next build"
 
 [deploy]
-startCommand = "npm run start"
+startCommand = "node -e \"require('tsx/cjs'); require('./scripts/start.ts');\""
 healthcheckPath = "/api/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
