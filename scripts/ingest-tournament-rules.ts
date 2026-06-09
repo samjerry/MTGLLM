@@ -25,69 +25,89 @@ const EMBEDDING_MODEL = "text-embedding-004";
 const EMBEDDING_DIMENSIONS = 768;
 const BATCH_SIZE = 50;
 
-// Wizards publishes the MTR and IPG annually. We try the current year first,
-// then fall back to the previous year -- the same pattern as the Comp Rules script.
-// NOTE: Wizards publishes these as PDFs, not plain text. If the .txt URLs below
-// return 404, you will need to convert the PDFs to text first (e.g. using pdftotext
-// or a PDF parsing library) and host the plain text yourself.
-const DOCUMENT_TEMPLATES = [
+// Wizards publishes the MTR and IPG as PDFs at WPN.
+// We scrape the rules page to find current URLs rather than hardcoding dated filenames.
+const DOCUMENT_SOURCES = [
   {
     key: "mtr",
     label: "Magic Tournament Rules",
-    urlTemplate: (year: number) =>
-      `https://media.wizards.com/${year}/downloads/MagicTournamentRules.txt`,
+    urlPattern: /https:\/\/media\.wizards\.com\/[^"'\s]+MTG_MTR[^"'\s]+\.pdf/i,
     table: "tournament_rules",
   },
   {
     key: "ipg",
     label: "Infraction Procedure Guide",
-    urlTemplate: (year: number) =>
-      `https://media.wizards.com/${year}/downloads/MTG_InfractionProcedureGuide.txt`,
+    urlPattern: /https:\/\/media\.wizards\.com\/[^"'\s]+MTG_IPG[^"'\s]+\.pdf/i,
     table: "infraction_guide",
   },
 ];
+
+const WPN_RULES_PAGE = "https://wpn.wizards.com/en/rules-documents";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface PolicyChunk {
-  section_number: string;  // e.g. "2.3" or "2.3.1"
-  section_title: string;   // e.g. "Player Responsibilities"
-  parent_section: string;  // e.g. "2" or "2.3"
+  section_number: string;
+  section_title: string;
+  parent_section: string;
   text: string;
 }
 
 // ---------------------------------------------------------------------------
-// Fetch document text
+// Scrape current PDF URLs from the WPN rules page
 // ---------------------------------------------------------------------------
 
-async function fetchDocument(
-  urlTemplate: (year: number) => string,
+async function findDocumentUrl(
+  pattern: RegExp,
   label: string
 ): Promise<string> {
-  const currentYear = new Date().getFullYear();
+  console.log(`Scraping WPN rules page for ${label} URL...`);
+  const res = await fetch(WPN_RULES_PAGE, {
+    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
+  });
 
-  for (const year of [currentYear, currentYear - 1]) {
-    const url = urlTemplate(year);
-    console.log(`Trying ${label}: ${url}`);
-
-    const res = await fetch(url, {
-      headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
-    });
-
-    if (res.ok) {
-      console.log(`Fetched ${label} from ${year} URL.`);
-      return await res.text();
-    }
-
-    console.warn(`  ${res.status} -- trying previous year...`);
+  if (!res.ok) {
+    throw new Error(`Could not fetch WPN rules page: ${res.status}`);
   }
 
-  throw new Error(
-    `Could not fetch ${label} for current or previous year. ` +
-    `Wizards may only publish this as a PDF -- convert to plain text and host manually.`
-  );
+  const html = await res.text();
+  const match = html.match(pattern);
+
+  if (!match) {
+    throw new Error(
+      `Could not find ${label} PDF URL on the WPN rules page. ` +
+      `Check ${WPN_RULES_PAGE} manually and update DOCUMENT_SOURCES patterns.`
+    );
+  }
+
+  console.log(`Found ${label} URL: ${match[0]}`);
+  return match[0];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch PDF and extract text using pdf-parse
+// ---------------------------------------------------------------------------
+
+async function fetchDocumentText(url: string, label: string): Promise<string> {
+  console.log(`Fetching ${label} PDF...`);
+  const res = await fetch(url, {
+    headers: { "User-Agent": "MTG-LLM-Assistant/1.0" },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Could not fetch ${label}: ${res.status}`);
+  }
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+
+  // Dynamically import pdf-parse to avoid issues with Next.js bundling
+  const pdfParse = (await import("pdf-parse")).default;
+  const parsed = await pdfParse(buffer);
+
+  console.log(`Extracted ${parsed.text.length} characters from ${label}.`);
+  return parsed.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,10 +294,11 @@ async function main() {
   const genAI = new GoogleGenerativeAI(geminiKey);
 
   try {
-    for (const source of DOCUMENT_TEMPLATES) {
+    for (const source of DOCUMENT_SOURCES) {
       console.log(`\n--- Processing ${source.label} ---`);
 
-      const raw = await fetchDocument(source.urlTemplate, source.label);
+      const url = await findDocumentUrl(source.urlPattern, source.label);
+      const raw = await fetchDocumentText(url, source.label);
       const chunks = chunkDocument(raw, source.label);
 
       await setupTable(pool, source.table);
