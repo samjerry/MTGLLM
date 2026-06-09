@@ -12,13 +12,6 @@
  *   3. After deploy succeeds, set INGEST_ON_DEPLOY=false (or delete the var)
  */
 
-import { execSync } from "child_process";
-
-function run(cmd: string) {
-  console.log(`\n> ${cmd}`);
-  execSync(cmd, { stdio: "inherit" });
-}
-
 async function main() {
   const shouldIngest = process.env.INGEST_ON_DEPLOY === "true";
 
@@ -26,10 +19,11 @@ async function main() {
     console.log("INGEST_ON_DEPLOY=true -- running ingestion scripts...\n");
 
     console.log("--- Ingesting Comprehensive Rules ---");
-    run("npx tsx scripts/ingest-comp-rules.ts");
+    // Dynamically import so we run in the same tsx process -- no subprocess needed
+    await import("./ingest-comp-rules.js");
 
     console.log("\n--- Ingesting Tournament Rules (MTR + IPG) ---");
-    run("npx tsx scripts/ingest-tournament-rules.ts");
+    await import("./ingest-tournament-rules.js");
 
     console.log("\nIngestion complete.");
   } else {
